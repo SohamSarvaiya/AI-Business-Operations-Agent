@@ -1,6 +1,6 @@
 # ai-business-operations-agent
 
-Ek **read-only Agentic AI** jo business request samajhta hai, tools se database ka data padhta hai, Python se calculation karta hai, aur **structured report + data sources** return karta hai.
+A **read-only agentic AI** that understands a business request, reads data from the database using tools, does the calculations in Python, and returns a **structured report with data sources**.
 
 > Example: *"Prepare a sales report for this month and identify the products with declining sales."*
 
@@ -22,84 +22,84 @@ Request ─▶ FastAPI ─▶ AgentService ─▶ LangGraph
      BusinessReport + data_sources (system-generated from tool logs)
 ```
 
-| Feature | Kahan hai |
+| Feature | Where to find it |
 |---|---|
-| Tool calling (3 providers) | `app/llm/*_client.py`, common interface `app/llm/base.py` |
-| Structured outputs | `submit_report` tool + Pydantic `app/schemas.py` |
-| State management | LangGraph `AgentState` + runs DB me persist (`agent_runs`) |
-| Error handling | tool errors LLM ko wapas jaate hain, LLM retry/backoff, max-iterations guard, invalid report retry |
-| Human approval | write tools `requires_approval=True`; graph pause → `POST /runs/{id}/approval` |
-| Tool execution logs | `tool_logs` table + `GET /runs/{id}/logs` (args, status, duration, sources) |
-| Evaluation tests | `tests/test_evals.py` (ground-truth, destructive request, prompt injection) |
+| Tool calling (3 providers) | `app/llm/*_client.py`, common interface in `app/llm/base.py` |
+| Structured outputs | `submit_report` tool + Pydantic models in `app/schemas.py` |
+| State management | LangGraph `AgentState` + runs persisted in the DB (`agent_runs`) |
+| Error handling | Tool errors are sent back to the LLM, LLM retry with backoff, max-iterations guard, retry on invalid report |
+| Human approval | Write tools use `requires_approval=True`; the graph pauses until `POST /runs/{id}/approval` |
+| Tool execution logs | `tool_logs` table + `GET /runs/{id}/logs` (arguments, status, duration, sources) |
+| Evaluation tests | `tests/test_evals.py` (ground truth, destructive request, prompt injection) |
 
 ### Safety design
-- **Read-only by default**: sirf read tools registered hain; read tools PostgreSQL me `SET TRANSACTION READ ONLY` ke andar chalte hain.
-- LLM kabhi **SQL nahi likhta** – sirf pre-written, parameterised tools call karta hai.
-- Saari **calculations Python me** hoti hain (`app/tools/analytics.py`), LLM arithmetic nahi karta.
-- **Data sources system attach karta hai** (actual tool logs se) – LLM fake source nahi bana sakta.
-- Write action (optional): `ENABLE_WRITE_TOOLS=true` karne par sirf `create_restock_draft` (draft row) milta hai, wo bhi **human approval ke baad**.
+- **Read-only by default**: only read tools are registered, and they run inside `SET TRANSACTION READ ONLY` on PostgreSQL.
+- The LLM **never writes SQL**. It only calls pre-written, parameterised tools.
+- All **calculations happen in Python** (`app/tools/analytics.py`). The LLM does no arithmetic.
+- **Data sources are attached by the system** from the actual tool logs, so the LLM cannot invent a source.
+- Optional write action: with `ENABLE_WRITE_TOOLS=true`, the only write tool is `create_restock_draft` (inserts a draft row), and it runs only **after human approval**.
 
-## Quick start (bina API key ke)
+## Quick start (no API key needed)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env              # LLM_PROVIDER=mock default hai
+cp .env.example .env              # LLM_PROVIDER=mock is the default
 
 # Option A: Docker (PostgreSQL + API)
 docker compose up --build         # http://localhost:8000/docs
 
 # Option B: local
 docker compose up -d db
-python -m app.seed --reset        # demo data (120 din)
+python -m app.seed --reset        # demo data (120 days)
 uvicorn app.main:app --reload
-# ya CLI:
+# or use the CLI:
 python -m app.cli "Prepare a sales report for this month and identify the products with declining sales."
 ```
 
 ## Web UI
 
-Server chalane ke baad browser me **http://localhost:8000** kholo.
-- Provider chuno: Demo (no key) / OpenAI / Anthropic / Gemini
-- API key aur (optional) model name UI me paste karo – key sirf us request ke liye memory me use hoti hai, DB/logs me save nahi hoti
-- Request likho ya example chip dabao → report, KPI cards, declining products table, data sources, tool execution log
-- Human approval card, "Copy markdown" aur "Download .md" bhi hai
+After starting the server, open **http://localhost:8000** in your browser.
+- Choose a provider: Demo (no key) / OpenAI / Anthropic / Gemini
+- Paste your API key and (optionally) a model name in the UI. The key is used in memory for that request only and is never saved in the DB or logs.
+- Type a request or click an example chip to get the report, KPI cards, declining products table, data sources and tool execution log
+- There is also a human approval card, plus "Copy markdown" and "Download .md" buttons
 - Swagger docs: http://localhost:8000/docs
 
-> Public internet par deploy karo to HTTPS zaroor lagao, warna API key plain HTTP par jayegi.
+> If you deploy this on the public internet, use HTTPS. Otherwise the API key travels over plain HTTP.
 
 ## Screenshots
 
-Sab screenshots **Demo mode** (bina API key ke) me liye gaye hain, taaki koi bhi repo clone karke wahi UI dekh sake.
+All screenshots were taken in **Demo mode** (no API key), so anyone can clone the repo and see the same UI.
 
-### 1. Home – request likho, model chuno
+### 1. Home: write a request and choose a model
 ![Home](docs/screenshots/01-home.png)
 
-### 2. LLM settings – OpenAI / Anthropic / Gemini ki key UI me
+### 2. LLM settings: enter an OpenAI / Anthropic / Gemini key in the UI
 ![LLM settings](docs/screenshots/02-llm-settings.png)
 
-### 3. Sales report – KPI cards, declining products, insights, data sources
+### 3. Sales report: KPI cards, declining products, insights, data sources
 ![Sales report](docs/screenshots/03-sales-report.png)
 
-### 4. Tool execution log – har tool ke arguments, result aur duration
+### 4. Tool execution log: arguments, result and duration for every tool call
 ![Tool execution log](docs/screenshots/04-tool-log.png)
 
-### 5. Human approval – write action se pehle agent ruk jaata hai
+### 5. Human approval: the agent stops before a write action
 ![Approval required](docs/screenshots/05-approval-required.png)
 
-### 6. Approve ke baad – draft bana, aur log me `approved` dikhta hai
+### 6. After approval: the draft is created and the log shows `approved`
 ![Approved and logged](docs/screenshots/06-approved-and-logged.png)
 
-> Screenshots script se bante hain (fixed demo date 2026-10-29, isliye numbers hamesha same). UI badalne ke baad dobara banao:
+> The screenshots are generated by a script (fixed demo date 2026-10-29, so the numbers are always the same). After changing the UI, regenerate them:
 > ```bash
 > pip install -r requirements-dev.txt && playwright install chromium
-> python scripts/capture_screenshots.py     # PostgreSQL ya API key ki zarurat nahi
+> python scripts/capture_screenshots.py     # no PostgreSQL or API key needed
 > ```
-> Screenshots 5 aur 6 me ek chhota scripted model use hota hai (mock model kabhi write action nahi maangta); approval gate, DB write aur tool log asli hain.
+> Screenshots 5 and 6 use a small scripted model, because the mock model never asks for a write action. The approval gate, DB write and tool log are all real.
 
-## Real LLM use karna (API keys)
+## Using a real LLM (API keys)
 
-`.env` me key daalo aur provider chuno:
+Put your key in `.env` and choose a provider:
 
 ```env
 LLM_PROVIDER=openai        # openai | anthropic | gemini | mock
@@ -107,8 +107,8 @@ OPENAI_API_KEY=sk-...        OPENAI_MODEL=gpt-4o
 ANTHROPIC_API_KEY=sk-ant-... ANTHROPIC_MODEL=claude-sonnet-5-5
 GEMINI_API_KEY=...           GEMINI_MODEL=gemini-2.5-flash
 ```
-Har request me provider override bhi kar sakte ho: `{"request": "...", "provider": "anthropic"}`.
-Model names `.env` se badalte hain, code change nahi chahiye.
+You can also override the provider per request: `{"request": "...", "provider": "anthropic"}`.
+Model names are changed in `.env`, so no code change is needed.
 
 ## API
 
@@ -118,7 +118,7 @@ curl -X POST localhost:8000/runs -H 'content-type: application/json' \
 
 GET  /runs/{id}            # status, report (JSON + markdown), pending approvals
 GET  /runs/{id}/logs       # tool execution logs
-POST /runs/{id}/approval   # {"approve": true|false}  (jab status = awaiting_approval)
+POST /runs/{id}/approval   # {"approve": true|false}  (when status = awaiting_approval)
 GET  /tools                # available tools (read_only / requires_approval)
 GET  /health
 ```
@@ -126,16 +126,16 @@ GET  /health
 ## Tests
 
 ```bash
-pytest -q        # SQLite in-memory + scripted/mocked LLM: no API key, no network
+pytest -q        # in-memory SQLite + scripted/mocked LLM: no API key, no network
 ```
-Tests me: tools (hand-computed numbers), LangGraph flows (retry, errors, max-iterations, approval approve/reject), LLM message converters, API, aur evals.
+The tests cover tools (hand-computed numbers), LangGraph flows (retry, errors, max iterations, approval approve/reject), LLM message converters, the API, and evals.
 
-## Naya tool add karna
-1. `app/tools/sales.py` me Pydantic args model + handler likho (`ToolResult(data, sources)`).
-2. `app/tools/registry.py` me `ToolDef(...)` register karo. Write tool ho to `mutating=True, requires_approval=True`.
-3. `tests/` me test add karo.
+## Adding a new tool
+1. In `app/tools/sales.py`, write a Pydantic args model and a handler (`ToolResult(data, sources)`).
+2. Register a `ToolDef(...)` in `app/tools/registry.py`. For a write tool, set `mutating=True, requires_approval=True`.
+3. Add a test in `tests/`.
 
 ## Notes
 - `DATABASE_URL=postgresql+psycopg://user:pass@host:5432/db`
-- Tables abhi `create_all` se bante hain; production me Alembic migrations add karo.
-- OpenAI/Anthropic/Gemini clients official SDK tool-calling format par bane hain aur unke message converters unit-tested hain; live calls ke liye apni keys se ek baar chala ke verify karna.
+- Tables are currently created with `create_all`. For production, add Alembic migrations.
+- The OpenAI, Anthropic and Gemini clients follow each official SDK's tool-calling format, and their message converters are unit-tested. For live calls, run it once with your own keys to verify.
