@@ -1,0 +1,99 @@
+"""Rule-based demo 'LLM' so the whole project runs without any API key.
+
+It follows the same tool-calling protocol as real models: date ranges -> data tools -> submit_report.
+"""
+import json
+
+from app.llm.base import LLMClient, LLMResponse, ToolCall, ToolSpec
+
+
+class MockLLMClient(LLMClient):
+    provider = "mock"
+    model = "rule-based-demo"
+
+    def __init__(self, currency: str = "INR"):
+        self.currency = currency
+
+    def chat(self, system: str, messages: list[dict], tools: list[ToolSpec]) -> LLMResponse:
+        results: dict[str, dict] = {}
+        n_tool_msgs = 0
+        for m in messages:
+            if m["role"] == "tool":
+                n_tool_msgs += 1
+                try:
+                    payload = json.loads(m["content"])
+                except json.JSONDecodeError:
+                    payload = {"ok": False}
+                if payload.get("ok"):
+                    results[m["name"]] = payload["data"]
+
+        if n_tool_msgs == 0:
+            return self._calls([("get_date_ranges", {})], 0)
+
+        if "find_declining_products" not in results and n_tool_msgs < 6 and "get_date_ranges" in results:
+            dr = results["get_date_ranges"]
+            cur, prev = dr["this_month_to_date"], dr["last_month_same_days"]
+            return self._calls([
+                ("get_sales_summary", cur),
+                ("get_sales_summary", prev),
+                ("find_declining_products", {
+                    "current_start": cur["start_date"], "current_end": cur["end_date"],
+                    "previous_start": prev["start_date"], "previous_end": prev["end_date"], "min_decline_pct": 5}),
+                ("get_inventory_status", {"low_stock_only": True}),
+            ], n_tool_msgs)
+
+        return self._calls([("submit_report", self._report(messages, results))], n_tool_msgs)
+
+    # ----- helpers -----
+    def _calls(self, calls, offset):
+        return LLMResponse(tool_calls=[ToolCall(id=f"mock_{offset}_{i}", name=n, arguments=a) for i, (n, a) in enumerate(calls)])
+
+    def _report(self, messages, results):
+        summaries = []
+        for m in messages:
+            if m["role"] == "tool" and m["name"] == "get_sales_summary":
+                p = json.loads(m["content"])
+                if p.get("ok"):
+                    summaries.append(p["data"])
+        cur = summaries[0] if summaries else None
+        prev = summaries[1] if len(summaries) > 1 else None
+        dec = results.get("find_declining_products", {})
+        inv = results.get("get_inventory_status", {}).get("items", [])
+        cur_rev = cur["total_revenue"] if cur else 0.0
+        prev_rev = prev["total_revenue"] if prev else 0.0
+        change = round((cur_rev - prev_rev) / prev_rev * 100, 2) if prev_rev else None
+        metrics = []
+        if cur:
+            metrics += [
+                {"name": "Total revenue", "value": f"{cur_rev:,.2f} {self.currency}",
+                 "context": f"{change:+.2f}% vs {prev['period']}" if change is not None and prev else ""},
+                {"name": "Orders", "value": str(cur["total_orders"]), "context": f"previous: {prev['total_orders']}" if prev else ""},
+                {"name": "Units sold", "value": str(cur["units_sold"]), "context": ""},
+                {"name": "Average order value",
+                 "value": f"{cur['average_order_value']:,.2f} {self.currency}" if cur["average_order_value"] else "n/a", "context": ""},
+            ]
+        declining = [
+            {"sku": p["sku"], "name": p["name"], "previous_revenue": p["previous_revenue"],
+             "current_revenue": p["current_revenue"], "change_pct": p["revenue_change_pct"] or 0.0,
+             "note": f"units {p['previous_units']} -> {p['current_units']}"}
+            for p in dec.get("declining_products", [])[:10]
+        ]
+        recs = []
+        if declining:
+            recs.append(f"Review pricing, promotion and visibility for the top declining products (starting with {declining[0]['name']}).")
+        if inv:
+            recs.append("Restock low-inventory items: " + ", ".join(i["sku"] for i in inv[:5]) + ".")
+        return {
+            "title": f"Sales report: {cur['period']}" if cur else "Sales report",
+            "period": f"{cur['period']} compared with {prev['period']}" if cur and prev else (cur["period"] if cur else "n/a"),
+            "executive_summary": (
+                f"Revenue was {cur_rev:,.2f} {self.currency}"
+                + (f" ({change:+.2f}% vs the comparable previous period)" if change is not None else "")
+                + f". {dec.get('declining_count', 0)} product(s) declined by at least {dec.get('min_decline_pct', 5)}%."
+            ) if cur else "Could not retrieve sales data.",
+            "key_metrics": metrics,
+            "declining_products": declining,
+            "insights": [f"{len(declining)} products show falling revenue." if declining else "No products declined beyond the threshold."],
+            "recommendations": recs,
+            "limitations": ["Generated by the rule-based mock model (no real LLM). Switch LLM_PROVIDER for richer analysis."],
+        }
